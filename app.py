@@ -1,509 +1,327 @@
-import io
-import json
-import socket
-import ollama
+   
+import os
 import gradio as gr
-from PIL import Image
+from transformers import pipeline
 
 # ==========================================
-# AI RECYCLING DETECTOR - ADVANCED EDITION
-# Uses local vision AI. No API key required.
+# AI RECYCLING DETECTOR
+# No API key and no Ollama required
 # ==========================================
 
-MODEL_NAME = "qwen2.5vl:3b"
+MODEL_NAME = "openai/clip-vit-base-patch32"
+ai_model = None
 
+MATERIALS = {
+    "plastic": "Plastic",
+    "glass": "Glass",
+    "metal": "Metal",
+    "paper": "Paper",
+    "cardboard": "Cardboard",
+    "rubber": "Rubber",
+    "wood": "Wood",
+    "fabric": "Fabric or textile",
+    "leather": "Leather",
+    "ceramic": "Ceramic or porcelain",
+    "electronic": "Electronic waste",
+    "mixed": "Mixed materials",
+    "food": "Actual food waste",
+    "leaves": "Leaves or garden waste",
+    "stone": "Stone or rocks",
+    "soil": "Soil or dirt",
+    "unknown": "Unknown material",
+}
 
-# ==========================================
-# RECYCLING CATEGORIES
-# ==========================================
+OBJECT_LABELS = {
+    "plastic": "a plastic bottle, container, or plastic packaging",
+    "glass": "a glass bottle or glass jar",
+    "metal": "a metal can or metal packaging",
+    "paper": "a sheet of paper or paper packaging",
+    "cardboard": "a cardboard box or cardboard packaging",
+    "rubber": "a rubber object or rubber tyre",
+    "wood": "a wooden object",
+    "fabric": "clothing or a fabric textile",
+    "leather": "a leather object or leather bag",
+    "ceramic": "a ceramic plate, cup, or porcelain object",
+    "electronic": "an electronic device or battery",
+    "mixed": "an object made of several different materials",
+    "food": "discarded food or food peels",
+    "leaves": "leaves or garden waste",
+    "stone": "a stone or rock",
+    "soil": "soil or loose dirt by itself",
+    "unknown": "an object whose material is difficult to identify",
+}
+
+CONTAMINATION_LABELS = {
+    "clean": "a clean object with no visible stains or dirt",
+    "food stains": "an object with visible food stains or sauce",
+    "stuck-on food": "an object with visible food scraps stuck to it",
+    "oil or grease": "an object visibly covered in oil or grease",
+    "mud or dirt": "an object visibly covered in mud or dirt",
+    "dust and grime": "an object visibly covered in dust or grime",
+}
 
 RECYCLING_INFO = {
-    "plastic": {
-        "category": "Plastic recycling",
-        "advice": (
-            "Empty and rinse the container. Recycle it only if "
-            "your local programme accepts that type of plastic."
-        )
-    },
-    "glass": {
-        "category": "Glass bottle and jar recycling",
-        "advice": (
-            "Empty and rinse bottles and jars. Mirrors, ceramics "
-            "and porcelain do not belong in ordinary glass recycling."
-        )
-    },
-    "metal": {
-        "category": "Metal recycling",
-        "advice": (
-            "Empty and clean accepted metal cans and packaging. "
-            "Use a specialist service for hazardous metal items."
-        )
-    },
-    "paper": {
-        "category": "Paper recycling",
-        "advice": (
-            "Recycle only clean, dry paper. Greasy, wet or heavily "
-            "food-soiled paper generally belongs in general waste."
-        )
-    },
-    "cardboard": {
-        "category": "Cardboard recycling",
-        "advice": (
-            "Flatten clean, dry cardboard. Heavily food-soiled or "
-            "greasy cardboard generally belongs in general waste."
-        )
-    },
-    "rubber": {
-        "category": "Special rubber collection",
-        "advice": (
-            "Rubber tyres and most rubber products do not belong "
-            "in ordinary household recycling. Check specialist "
-            "collection options."
-        )
-    },
-    "wood": {
-        "category": "Wood reuse or specialist collection",
-        "advice": (
-            "Reuse the wood if possible. Painted or treated wood "
-            "may need a separate disposal service."
-        )
-    },
-    "fabric": {
-        "category": "Textile collection",
-        "advice": (
-            "Keep textiles clean and dry. Use a textile collection "
-            "service that accepts the item."
-        )
-    },
-    "leather": {
-        "category": "Reuse or specialist collection",
-        "advice": (
-            "Reuse the item if possible or check specialist "
-            "collection and local disposal options."
-        )
-    },
-    "ceramic": {
-        "category": "Special ceramic disposal",
-        "advice": (
-            "Ceramics and porcelain do not belong in glass recycling. "
-            "Reuse them if possible or check local disposal rules."
-        )
-    },
-    "electronic": {
-        "category": "Electronic waste (e-waste)",
-        "advice": (
-            "Use an approved electronic-waste collection point. "
-            "Batteries may require separate handling."
-        )
-    },
-    "mixed": {
-        "category": "Mixed-material collection",
-        "advice": (
-            "Separate materials where possible. Recycle individual "
-            "parts only if your local programme accepts them."
-        )
-    }
+    "plastic": (
+        "Plastic recycling",
+        "Empty and rinse it. Check whether your local programme "
+        "accepts this type of plastic."
+    ),
+    "glass": (
+        "Glass bottles and jars",
+        "Recycle accepted bottles and jars. Mirrors, drinking "
+        "glasses, and ceramics may not belong in glass recycling."
+    ),
+    "metal": (
+        "Metal recycling",
+        "Empty and clean accepted metal cans and packaging."
+    ),
+    "paper": (
+        "Paper recycling",
+        "Recycle clean, dry paper. Greasy or heavily food-soiled "
+        "paper generally belongs in general waste."
+    ),
+    "cardboard": (
+        "Cardboard recycling",
+        "Flatten clean, dry cardboard. Greasy or heavily "
+        "food-soiled cardboard generally belongs in general waste."
+    ),
+    "rubber": (
+        "Specialist rubber collection",
+        "Check a specialist collection service. Rubber tyres "
+        "usually do not belong in ordinary recycling bins."
+    ),
+    "wood": (
+        "Wood reuse or specialist collection",
+        "Reuse the wood or check local wood collection rules."
+    ),
+    "fabric": (
+        "Textile collection",
+        "Keep textiles clean and dry and use a service that "
+        "accepts the item."
+    ),
+    "leather": (
+        "Reuse or specialist collection",
+        "Reuse the item if possible or check specialist options."
+    ),
+    "ceramic": (
+        "Ceramic disposal",
+        "Reuse it if possible. Do not put ceramics in ordinary "
+        "glass bottle recycling."
+    ),
+    "electronic": (
+        "Electronic waste (e-waste)",
+        "Use an approved e-waste collection point. Batteries "
+        "may need separate handling."
+    ),
+    "mixed": (
+        "Mixed-material collection",
+        "Separate the parts where possible and check local rules."
+    ),
+}
+
+NON_RECYCLABLE_NATURAL = {
+    "food": (
+        "Food waste / organic waste",
+        "Use a suitable food-waste collection or composting "
+        "option if available."
+    ),
+    "leaves": (
+        "Garden or organic waste",
+        "Compost them or use an appropriate garden-waste service."
+    ),
+    "stone": (
+        "Stone or construction waste",
+        "Reuse the stone or check local construction-waste rules."
+    ),
+    "soil": (
+        "Soil or specialist disposal",
+        "Check local soil reuse and disposal options."
+    ),
 }
 
 
-# ==========================================
-# AI INSTRUCTIONS
-# ==========================================
+def get_model():
+    global ai_model
 
-AI_INSTRUCTIONS = """
-You are an advanced visual material identification and recycling AI.
+    if ai_model is None:
+        ai_model = pipeline(
+            "zero-shot-image-classification",
+            model=MODEL_NAME,
+            device=-1
+        )
 
-Carefully examine the provided photograph and return ONLY valid JSON.
-
-Your most important job is to identify the MAIN PHYSICAL OBJECT,
-not the food, dirt, stains, or other things attached to it.
-
-CRITICAL RULES:
-
-1. A plastic container with sauce on it is PLASTIC, not food waste.
-2. A metal can with food scraps stuck to it is METAL, not food waste.
-3. A cardboard box with food stains is CARDBOARD, not food waste.
-4. Food stains, crumbs, stuck-on food, grease, mud, dust and dirt
-   are contamination when attached to another identifiable object.
-5. Only classify an item as food waste when the main subject itself
-   is actual discarded food or food peels, rather than another object.
-6. If food scraps are attached to a container, identify the container.
-7. If the main object is a rock, stone, leaves, soil or garden waste,
-   do not classify it as recyclable packaging.
-8. If the object is electronic waste or a battery, recommend the
-   appropriate specialist collection route.
-9. Never invent a material when the photograph is unclear.
-10. Do not claim that an item is contaminated if there is no visible
-    evidence. Do not claim that hidden germs or chemicals can be seen.
-11. Treat your confidence score as an estimate, not a probability.
-12. Only report contamination when visible evidence supports it.
-13. Use simple, specific language.
-
-Choose one material:
-plastic, glass, metal, paper, cardboard, rubber, wood, fabric,
-leather, ceramic, electronic, mixed, food waste, leaves, stone,
-soil, or unknown.
-
-Return this exact JSON structure:
-
-{
-  "item": "name of the main object",
-  "material": "one material from the list",
-  "confidence": 0,
-  "contaminated": false,
-  "contamination_types": [],
-  "condition_note": "",
-  "is_food_waste": false,
-  "reason": "short explanation of identification"
-}
-
-The confidence must be an integer from 0 to 100.
-
-The contaminated field must be true only if there is visible evidence
-of food residue, stuck-on food, dirt, mud, oil, grease, dust or grime.
-
-contamination_types should contain only visible contamination types,
-such as:
-"food stains", "stuck-on food", "dirt", "mud", "oil or grease",
-or "dust and grime".
-
-If the object is clean, return contaminated=false,
-an empty contamination_types list, and an empty condition_note.
-
-For actual food waste, use material="food waste" and
-is_food_waste=true.
-
-For food stains or scraps stuck to another object, use the object's
-material and is_food_waste=false.
-
-Return JSON only. No Markdown or additional text.
-"""
+    return ai_model
 
 
-# ==========================================
-# CALL THE LOCAL VISION AI
-# ==========================================
-
-def analyse_with_ai(image):
+def analyse_image(image):
     if image is None:
-        return "Please upload an image first."
+        return "## Please upload an image first."
 
     try:
-        # Convert the uploaded picture into bytes for Ollama.
+        model = get_model()
         image = image.convert("RGB")
 
-        image_buffer = io.BytesIO()
-        image.save(image_buffer, format="JPEG", quality=95)
-        image_bytes = image_buffer.getvalue()
-
-        # Run vision AI on the computer.
-        response = ollama.chat(
-            model=MODEL_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": AI_INSTRUCTIONS
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Identify the main object and its material. "
-                        "Separately inspect visible contamination. "
-                        "Follow the JSON instructions exactly."
-                    ),
-                    "images": [image_bytes]
-                }
-            ],
-            format="json",
-            options={
-                "temperature": 0,
-                "num_ctx": 4096
-            }
+        # Identify the main object/material.
+        material_results = model(
+            image,
+            candidate_labels=list(OBJECT_LABELS.values()),
+            hypothesis_template="This is {}.",
         )
 
-        answer = response["message"]["content"]
-        data = json.loads(answer)
+        best_material = material_results[0]
+        selected_description = best_material["label"]
+        confidence = round(best_material["score"] * 100)
 
-        return create_recycling_report(data)
+        material = next(
+            (
+                key for key, description in OBJECT_LABELS.items()
+                if description == selected_description
+            ),
+            "unknown"
+        )
+
+        # Do not treat food attached to an object as the object.
+        if material == "unknown":
+            return """
+## ♻️ Recycling Analysis
+
+**Material:** Could not be identified reliably.
+
+Please upload a clearer photo showing the whole object.
+"""
+
+        # Check for visible contamination separately.
+        contamination_results = model(
+            image,
+            candidate_labels=list(CONTAMINATION_LABELS.values()),
+            hypothesis_template="This is {}.",
+        )
+
+        best_contamination = contamination_results[0]
+        contamination_description = best_contamination["label"]
+
+        contamination_type = next(
+            (
+                key for key, description in CONTAMINATION_LABELS.items()
+                if description == contamination_description
+            ),
+            "clean"
+        )
+
+        # CLIP scores are relative matching scores, not probabilities.
+        # Use a conservative threshold to reduce false positives.
+        contamination_score = best_contamination["score"]
+        contaminated = (
+            contamination_type != "clean"
+            and contamination_score >= 0.30
+        )
+
+        # Natural materials and actual food are not ordinary
+        # recyclable packaging.
+        if material in NON_RECYCLABLE_NATURAL:
+            category, advice = NON_RECYCLABLE_NATURAL[material]
+
+            return f"""
+# ♻️ Recycling Analysis
+
+## Main object
+**{MATERIALS[material]}**
+
+## AI visual matching score
+**{confidence}%**
+
+## Recycling decision
+**Not recyclable as ordinary household packaging.**
+
+## Disposal category
+**{category}**
+
+## Advice
+{advice}
+
+---
+*AI visual matching scores are estimates, not probabilities.*
+"""
+
+        # Unknown categories should never receive a false
+        # recommendation to recycle.
+        if material not in RECYCLING_INFO:
+            return """
+# ♻️ Recycling Analysis
+
+**Material:** Unknown
+
+**Decision:** Cannot determine safely.
+
+Try a clearer image with good lighting.
+"""
+
+        category, advice = RECYCLING_INFO[material]
+
+        if contaminated:
+            decision = "NOT RECYCLABLE WHILE CONTAMINATED"
+            contamination_report = (
+                f"**Possible visible contamination:** "
+                f"{contamination_type.capitalize()}.\n\n"
+                "Clean the item if appropriate, let it dry, and "
+                "analyse it again. This image check cannot confirm "
+                "that all contamination has been removed."
+            )
+        else:
+            decision = (
+                "Potentially recyclable, subject to local rules"
+            )
+            contamination_report = (
+                "No clear contamination was identified by the AI. "
+                "Hidden dirt, germs, or chemicals cannot be detected "
+                "reliably from a photograph."
+            )
+
+        return f"""
+# ♻️ AI Recycling Analysis
+
+## Main object
+**{selected_description.capitalize()}**
+
+## Material identified
+**{MATERIALS[material]}**
+
+## AI visual matching score
+**{confidence}%**
+
+*This score is not a calibrated probability.*
+
+## Contamination check
+{contamination_report}
+
+## Recycling decision
+**{decision}**
+
+## Recycling category
+**{category}**
+
+## What should you do?
+{advice}
+
+---
+*This is an AI estimate. Recycling acceptance varies by location.*
+"""
 
     except Exception as error:
         return f"""
 # Analysis failed
 
-The AI could not analyse this image.
+The AI could not analyse this picture.
 
-**Possible solutions:**
-- Make sure Ollama is running.
-- Check that the model is installed.
-- Upload a clear image.
-- Check your internet connection if you are downloading
-  the model for the first time.
+Check that the model finished downloading and that the
+server has enough memory.
 
-**Technical details:** `{str(error)[:500]}`
+**Technical details:** {str(error)[:400]}
 """
 
 
 # ==========================================
-# CREATE THE RECYCLING REPORT
-# ==========================================
-
-def create_recycling_report(data):
-
-    item = str(data.get("item", "Unknown item")).strip()
-    material = str(data.get("material", "unknown")).lower().strip()
-
-    try:
-        confidence = int(data.get("confidence", 0))
-        confidence = max(0, min(100, confidence))
-    except (ValueError, TypeError):
-        confidence = 0
-
-    contaminated = data.get("contaminated") is True
-    is_food_waste = data.get("is_food_waste") is True
-
-    contamination_types = data.get("contamination_types", [])
-
-    if not isinstance(contamination_types, list):
-        contamination_types = []
-
-    condition_note = str(data.get("condition_note", "")).strip()
-    reason = str(data.get("reason", "")).strip()
-
-    # Normalise common alternative material names.
-    aliases = {
-        "aluminium": "metal",
-        "aluminum": "metal",
-        "steel": "metal",
-        "tin": "metal",
-        "textile": "fabric",
-        "clothing": "fabric",
-        "porcelain": "ceramic",
-        "stone": "stone",
-        "rocks": "stone",
-        "garden waste": "leaves",
-        "electronic waste": "electronic",
-        "e-waste": "electronic",
-        "food": "food waste",
-        "food scraps": "food waste",
-        "food peels": "food waste"
-    }
-
-    material = aliases.get(material, material)
-
-    # --------------------------------------
-    # ACTUAL FOOD WASTE ONLY
-    # --------------------------------------
-
-    if is_food_waste or material == "food waste":
-
-        return """
-# ♻️ Recycling Analysis
-
-## Item identified
-**Actual food waste**
-
-## Can it go in the usual recycling bin?
-**No.**
-
-## Disposal category
-**Food waste / organic waste**
-
-## What should you do?
-Use a suitable food-waste collection or composting option
-if available.
-
-Food stains or food scraps attached to a container are NOT
-automatically classified as food waste. They are contamination
-on the underlying object.
-"""
-
-    # --------------------------------------
-    # NON-RECYCLABLE NATURAL MATERIALS
-    # --------------------------------------
-
-    if material in ["leaves", "soil", "stone"]:
-
-        if material == "leaves":
-            category = "Garden or organic waste"
-            advice = (
-                "Compost the leaves or use a suitable garden-waste "
-                "collection service if available."
-            )
-        elif material == "soil":
-            category = "Soil or specialist disposal"
-            advice = (
-                "Check local soil disposal or reuse options."
-            )
-        else:
-            category = "Stone or construction waste"
-            advice = (
-                "Reuse the stone where possible or check local "
-                "construction-waste disposal guidance."
-            )
-
-        return f"""
-# ♻️ Recycling Analysis
-
-## Item identified
-**{item}**
-
-## Material
-**{material.capitalize()}**
-
-## Household recycling
-**Not accepted as ordinary recyclable packaging.**
-
-## Disposal category
-**{category}**
-
-## What should you do?
-{advice}
-"""
-
-    # --------------------------------------
-    # UNKNOWN MATERIAL
-    # --------------------------------------
-
-    if material == "unknown" or material not in RECYCLING_INFO:
-
-        return f"""
-# ♻️ Recycling Analysis
-
-## Item identified
-**{item}**
-
-## Material
-**Could not be identified reliably**
-
-## Recycling decision
-The AI does not have enough information to recommend
-a reliable recycling category.
-
-## What should you do?
-Upload a clearer picture showing the whole object,
-preferably with a plain background and good lighting.
-
-**AI explanation:** {reason}
-"""
-
-    # --------------------------------------
-    # MATERIAL AND CATEGORY
-    # --------------------------------------
-
-    info = RECYCLING_INFO[material]
-
-    material_section = f"""
-# ♻️ Recycling Analysis
-
-## Main object
-**{item}**
-
-## Material identified
-**{material.capitalize()}**
-
-## AI visual matching score
-**{confidence}%**
-
-*This is an AI estimate, not a guaranteed probability.*
-
-## Recycling category
-**{info["category"]}**
-"""
-
-    # --------------------------------------
-    # CONTAMINATION SECTION ONLY IF NEEDED
-    # --------------------------------------
-
-    contamination_section = ""
-
-    if contaminated:
-
-        clean_instructions = (
-            "Remove the visible residue and clean the item if "
-            "appropriate. Let it dry before recycling."
-        )
-
-        if material in ["paper", "cardboard"]:
-
-            clean_instructions = (
-                "Remove loose food scraps. Clean paper or cardboard "
-                "must be dry. Greasy, wet or heavily food-soiled "
-                "paper and cardboard generally belong in general waste."
-            )
-
-        contamination_names = ", ".join(
-            str(value) for value in contamination_types
-            if str(value).strip()
-        )
-
-        if not contamination_names:
-            contamination_names = "Possible visible residue"
-
-        contamination_section = f"""
-## ⚠️ Visible contamination
-**Possible contamination detected**
-
-**What was detected:** {contamination_names}
-
-{condition_note}
-
-## How to handle the contamination
-{clean_instructions}
-
-**Important:** The contamination does not change the material
-into food waste. The object remains identified as {material}.
-"""
-
-    # --------------------------------------
-    # RECYCLING DECISION
-    # --------------------------------------
-
-    if contaminated and material in ["paper", "cardboard"]:
-        decision = (
-            "Do not recycle it as paper/cardboard if it is greasy, "
-            "wet or heavily food-soiled."
-        )
-    elif contaminated:
-        decision = (
-            "Clean it first. Recycle only if the item is accepted "
-            "by the local collection programme."
-        )
-    else:
-        decision = (
-            "Potentially recyclable through the appropriate "
-            "collection route. Check local acceptance rules."
-        )
-
-    return f"""
-{material_section}
-
-## Recycling decision
-**{decision}**
-
-## What should you do?
-{info["advice"]}
-
-{contamination_section}
-
----
-
-*This is an AI estimate based on a photograph. The AI cannot
-test for germs or hidden chemicals. Recycling rules vary by location.*
-"""
-
-
-# ==========================================
-# FIND A FREE PORT
-# ==========================================
-
-def find_free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-# ==========================================
-# ADVANCED GRADIO INTERFACE
+# WEB APP
 # ==========================================
 
 CSS = """
@@ -514,19 +332,10 @@ CSS = """
 
 #main-title {
     text-align: center;
-    padding: 25px;
-    border-radius: 20px;
+    padding: 24px;
+    border-radius: 18px;
     background: linear-gradient(120deg, #064e3b, #15803d);
     color: white;
-}
-
-#main-title h1 {
-    font-size: 34px;
-    margin-bottom: 8px;
-}
-
-#main-title p {
-    font-size: 16px;
 }
 
 #analyse-button {
@@ -534,12 +343,7 @@ CSS = """
     font-size: 18px;
     font-weight: bold;
 }
-
-#result-panel {
-    border-radius: 15px;
-}
 """
-
 
 with gr.Blocks(
     title="AI Recycling Detector",
@@ -553,25 +357,21 @@ with gr.Blocks(
     gr.HTML("""
     <div id="main-title">
         <h1>♻️ AI Recycling Detector</h1>
-        <p>
-            Advanced vision AI for material identification,
-            contamination checking and smarter recycling.
-        </p>
+        <p>Identify materials, check visible contamination,
+        and find a suitable recycling category.</p>
     </div>
     """)
 
     gr.Markdown("""
-    Upload a photo and press **Analyse Object**.
+    Upload one object photo and press **Analyse Object**.
 
-    The AI identifies the main material first. Food stains,
-    dirt and stuck-on scraps are treated as contamination,
-    not automatically as food waste.
+    Food stains and dirt are checked separately from the main
+    object's material. Contaminated items are marked not recyclable
+    until cleaned and checked again.
     """)
 
     with gr.Row():
-
-        with gr.Column(scale=1):
-
+        with gr.Column():
             image_input = gr.Image(
                 type="pil",
                 label="Upload your object photo",
@@ -584,54 +384,33 @@ with gr.Blocks(
                 elem_id="analyse-button"
             )
 
-            gr.Markdown("""
-            **For better results**
-
-            - Show the whole object.
-            - Use clear lighting.
-            - Avoid blurry pictures.
-            - Try to show one main object.
-            """)
-
-        with gr.Column(scale=1):
-
+        with gr.Column():
             result_output = gr.Markdown(
-                value="## Your analysis will appear here.",
-                elem_id="result-panel"
+                "## Your analysis will appear here."
             )
 
     analyse_button.click(
-        fn=analyse_with_ai,
-        inputs=[image_input],
-        outputs=[result_output],
+        fn=analyse_image,
+        inputs=image_input,
+        outputs=result_output,
         concurrency_limit=1
     )
 
     gr.Markdown("""
     ---
-    **Privacy:** With local Ollama, images are sent to the local
-    model on your computer for analysis.
+    **Privacy:** This app uses an open-source vision model.
+    Uploaded images are processed by the server hosting the app.
 
-    **Accuracy:** AI results are estimates. Always follow local
-    recycling rules.
+    **Accuracy:** Visual AI can make mistakes. Always check
+    local recycling rules.
     """)
 
 
-# ==========================================
-# START THE APPLICATION
-# ==========================================
-
 if __name__ == "__main__":
-
-    port = find_free_port()
-
-    print("\nStarting Advanced AI Recycling Detector...")
-    print("AI model:", MODEL_NAME)
-    print("Keep Ollama and this terminal running.")
+    port = int(os.environ.get("PORT", 7860))
 
     app.launch(
-        share=True,
-        server_name="127.0.0.1",
+        server_name="0.0.0.0",
         server_port=port,
-        inbrowser=True
+        share=False
     )
