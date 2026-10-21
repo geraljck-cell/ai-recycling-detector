@@ -1,3 +1,4 @@
 gradio
-ollama
+transformers
+torch
 pillow
